@@ -13,6 +13,7 @@ and every file in the shipped archives.
 | **ModelTool** (Model Viewer) | `3dtool.py` | Shaded 3D preview, face list with texture ids and UVs, OBJ (with UVs and normals) and PLY export, batch export of 3D.BSA |
 | **Bs6Tool** (Level Viewer) | `bs6tool.py` | Chunk tree with decoded values, objects with model names resolved, top-down map of objects, flats and lights, XML and TSV export |
 | **RscTool** (Text Viewer) | `misc/rsctool.py` | Every TEXT.RSC string with its real id, search, control codes, TSV export |
+| **BsiThumbnail** (Explorer thumbnails) | new | Shows .BSI files as thumbnails in Windows Explorer (first frame, game colours) |
 
 Every viewer can open a loose file or pick an entry straight out of a `.BSA`.
 Files can also be dragged onto the window or passed on the command line,
@@ -22,6 +23,27 @@ and the BSA Browser's "Open in viewer" button hands entries to the other tools.
 
 Run `build.bat` (uses the MSBuild that comes with .NET Framework 4), or open
 `BattlespireTools.sln` in any Visual Studio from 2010 on. Output goes to `bin\Release`.
+
+## BSI thumbnails in Explorer
+
+`BsiThumbnail.dll` is a Windows thumbnail handler, so Explorer shows loose `.bsi`
+files as pictures instead of blank icons. It draws the first frame of the first image
+in the game's colours, keeps transparent pixels transparent, and enlarges small
+textures by whole steps so they stay sharp.
+
+To turn it on, run `BsiThumbnailSetup.exe` from `bin\Release` and answer Yes. It
+registers the handler for your Windows account only, so it needs no administrator
+rights. Run it again to turn thumbnails off (or use `BsiThumbnailSetup /install` and
+`/uninstall` from a script).
+
+- The handler is loaded from where it was built. If you move or delete `bin\Release`,
+  turn it off first, or run the setup again from the new place.
+- Explorer runs the handler in a separate `dllhost.exe`, which can keep the DLL locked
+  for a while. If a rebuild cannot overwrite `BsiThumbnail.dll`, close Explorer windows
+  showing BSI files or end that `dllhost.exe` (COM Surrogate) in Task Manager.
+- Explorer caches thumbnails. If old blank icons remain, use Disk Cleanup's
+  "Thumbnails" option.
+- Files inside `.BSA` archives are not shown; extract them with the BSA Browser first.
 
 ## Fixes compared with the Python tools
 
