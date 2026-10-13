@@ -33,14 +33,15 @@ textures by whole steps so they stay sharp.
 
 To turn it on, run `BsiThumbnailSetup.exe` from `bin\Release` and answer Yes. It
 registers the handler for your Windows account only, so it needs no administrator
-rights. Run it again to turn thumbnails off (or use `BsiThumbnailSetup /install` and
+rights. Run it again to update the handler or turn thumbnails off (or use `BsiThumbnailSetup /install` and
 `/uninstall` from a script).
 
-- The handler is loaded from where it was built. If you move or delete `bin\Release`,
-  turn it off first, or run the setup again from the new place.
-- Explorer runs the handler in a separate `dllhost.exe`, which can keep the DLL locked
-  for a while. If a rebuild cannot overwrite `BsiThumbnail.dll`, close Explorer windows
-  showing BSI files or end that `dllhost.exe` (COM Surrogate) in Task Manager.
+- Setup copies the handler to `%LOCALAPPDATA%\BattlespireTools` and registers that copy,
+  so `bin\Release` can be moved, cleaned or rebuilt freely. After rebuilding the
+  handler itself, run the setup again and choose Yes to update the installed copy.
+- Explorer runs the handler in a separate `dllhost.exe` (COM Surrogate), which can keep
+  the installed copy open for a while. Setup copes with that by installing under a new
+  name and removing the old copy later.
 - Explorer caches thumbnails. If old blank icons remain, use Disk Cleanup's
   "Thumbnails" option.
 - Files inside `.BSA` archives are not shown; extract them with the BSA Browser first.

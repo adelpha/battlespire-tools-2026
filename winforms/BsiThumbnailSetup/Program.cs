@@ -9,7 +9,9 @@ namespace BsiThumbnailSetup
 {
     /// <summary>
     /// Registers BsiThumbnail.dll as the Explorer thumbnail handler for .bsi files,
-    /// for the current user only, so no administrator rights are needed.
+    /// for the current user only, so no administrator rights are needed. The DLL is
+    /// copied to %LOCALAPPDATA%\BattlespireTools first, so the build folder can be
+    /// moved, cleaned or rebuilt without breaking thumbnails.
     /// Run with no arguments to be asked, or with /install or /uninstall.
     /// </summary>
     static class Program
@@ -30,25 +32,34 @@ namespace BsiThumbnailSetup
             {
                 if (mode == "")
                 {
-                    bool installed = IsInstalled();
-                    string q = installed
-                        ? "BSI thumbnails are turned on for your account.\n\nTurn them off?"
-                        : "Show thumbnails of Battlespire .BSI images in Explorer for your account?";
-                    if (MessageBox.Show(q, Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 0;
-                    mode = installed ? "uninstall" : "install";
+                    if (IsInstalled())
+                    {
+                        DialogResult r = MessageBox.Show(
+                            "BSI thumbnails are turned on for your account.\n\n" +
+                            "Yes: update them from this folder.\nNo: turn them off.\nCancel: leave them as they are.",
+                            Title, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                        if (r == DialogResult.Cancel) return 0;
+                        mode = r == DialogResult.Yes ? "install" : "uninstall";
+                    }
+                    else
+                    {
+                        if (MessageBox.Show("Show thumbnails of Battlespire .BSI images in Explorer for your account?",
+                            Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 0;
+                        mode = "install";
+                    }
                 }
 
                 if (mode == "install" || mode == "i")
                 {
                     string dll = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "BsiThumbnail.dll");
                     if (!File.Exists(dll)) throw new FileNotFoundException("BsiThumbnail.dll must be in the same folder as this program.", dll);
-                    Install(dll);
+                    Install(InstallCopy(dll));
                     Report(quiet, "BSI thumbnails are on. Explorer may need a moment, or a restart, to replace thumbnails it has already cached.");
                 }
                 else if (mode == "uninstall" || mode == "u")
                 {
                     Uninstall();
-                    Report(quiet, "BSI thumbnails are off.");
+                    Report(quiet, "BSI thumbnails are off. If Explorer still had the handler open, its copy in " + InstallFolder + " is removed next time.");
                 }
                 else
                 {
@@ -87,6 +98,57 @@ namespace BsiThumbnailSetup
             using (RegistryKey classes = OpenClasses())
             using (RegistryKey shellEx = classes.OpenSubKey(Extension + @"\ShellEx"))
                 return shellEx != null && IsOurs(shellEx);
+        }
+
+        /// <summary>Where the registered copy of the handler lives.</summary>
+        static string InstallFolder
+        {
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BattlespireTools"); }
+        }
+
+        /// <summary>
+        /// Copies the handler to the install folder and returns the copy's path.
+        /// Explorer's dllhost.exe may still have an older copy open, in which case it
+        /// cannot be overwritten; the new copy then gets a unique name and the old
+        /// one is removed by a later install or uninstall once it is no longer in use.
+        /// </summary>
+        static string InstallCopy(string dll)
+        {
+            string folder = InstallFolder;
+            Directory.CreateDirectory(folder);
+            string target = Path.Combine(folder, "BsiThumbnail.dll");
+            try
+            {
+                File.Copy(dll, target, true);
+            }
+            catch (Exception ex)
+            {
+                if (!(ex is IOException || ex is UnauthorizedAccessException)) throw;
+                target = Path.Combine(folder, "BsiThumbnail-" + DateTime.Now.ToString("yyyyMMddHHmmss") + ".dll");
+                File.Copy(dll, target, true);
+            }
+            DeleteOldCopies(target);
+            return target;
+        }
+
+        /// <summary>Deletes copies other than <paramref name="keep"/>, skipping any still in use.</summary>
+        static void DeleteOldCopies(string keep)
+        {
+            string folder = InstallFolder;
+            if (!Directory.Exists(folder)) return;
+            foreach (string f in Directory.GetFiles(folder, "BsiThumbnail*.dll"))
+            {
+                if (keep != null && string.Equals(Path.GetFullPath(f), Path.GetFullPath(keep), StringComparison.OrdinalIgnoreCase)) continue;
+                try { File.Delete(f); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            if (keep == null)
+            {
+                try { if (Directory.GetFileSystemEntries(folder).Length == 0) Directory.Delete(folder); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
 
         static void Install(string dll)
@@ -144,6 +206,7 @@ namespace BsiThumbnailSetup
                 }
                 classes.DeleteSubKeyTree(@"CLSID\" + Clsid, false);
             }
+            DeleteOldCopies(null);
             NotifyShell();
         }
 
