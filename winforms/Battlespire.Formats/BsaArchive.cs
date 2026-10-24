@@ -137,6 +137,56 @@ namespace Battlespire.Formats
                     FileLength - dirSize - offset);
         }
 
+        /// <summary>
+        /// True when the file has a typed BSA header and a directory whose sizes add up
+        /// to exactly the space between the header and the directory, whatever its
+        /// extension. (3D.BS6, for one, is a BSA archive of models, not a level.)
+        /// </summary>
+        public static bool LooksLikeArchive(string path)
+        {
+            try
+            {
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    long len = fs.Length;
+                    if (len < 4) return false;
+                    byte[] h = new byte[4];
+                    if (fs.Read(h, 0, 4) != 4) return false;
+                    int count = BitConverter.ToUInt16(h, 0);
+                    ushort type = BitConverter.ToUInt16(h, 2);
+                    int recordSize = type == TypeNamed ? NamedRecordSize : type == TypeNumeric ? NumericRecordSize : 0;
+                    if (recordSize == 0 || count == 0) return false;
+                    long dirSize = (long)count * recordSize;
+                    if (dirSize > len - 4) return false;
+                    byte[] dir = new byte[dirSize];
+                    fs.Seek(len - dirSize, SeekOrigin.Begin);
+                    int read = 0;
+                    while (read < dir.Length)
+                    {
+                        int n = fs.Read(dir, read, dir.Length - read);
+                        if (n <= 0) return false;
+                        read += n;
+                    }
+                    long total = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        int size = BitConverter.ToInt32(dir, i * recordSize + recordSize - 4);
+                        if (size < 0) return false;
+                        total += size;
+                    }
+                    return total == len - 4 - dirSize;
+                }
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
         static string ReadCString(byte[] buf, int offset, int max)
         {
             int n = 0;

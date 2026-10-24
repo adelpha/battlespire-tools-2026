@@ -173,7 +173,7 @@ namespace BsiTool
         {
             try
             {
-                if (string.Equals(Path.GetExtension(path), ".bsa", StringComparison.OrdinalIgnoreCase))
+                if (FileSource.IsArchive(path))
                 {
                     LoadedFile f = FileSource.PickFromArchive(this, path, new string[] { ".BSI" });
                     if (f != null) Open(f);

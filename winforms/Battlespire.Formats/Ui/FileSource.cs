@@ -43,15 +43,63 @@ namespace Battlespire.Formats.Ui
                 dlg.Title = title;
                 dlg.Filter = filter + "|BSA archives (*.bsa)|*.bsa|All files (*.*)|*.*";
                 if (dlg.ShowDialog(owner) != DialogResult.OK) return null;
-                if (string.Equals(Path.GetExtension(dlg.FileName), ".bsa", StringComparison.OrdinalIgnoreCase))
+                if (IsArchive(dlg.FileName))
                     return PickFromArchive(owner, dlg.FileName, extensions);
                 return Load(dlg.FileName);
             }
         }
 
+        /// <summary>True for a .BSA file, or any file laid out like one.</summary>
+        public static bool IsArchive(string path)
+        {
+            return string.Equals(Path.GetExtension(path), ".bsa", StringComparison.OrdinalIgnoreCase)
+                || BsaArchive.LooksLikeArchive(path);
+        }
+
         public static LoadedFile PickFromArchive(IWin32Window owner, string bsaPath, string[] extensions)
         {
             using (BsaArchive bsa = new BsaArchive(bsaPath))
+            {
+                if (extensions != null && extensions.Length > 0 && !HasEntryWith(bsa, extensions))
+                {
+                    MessageBox.Show(owner, string.Format(
+                        "{0} is a BSA archive of {1} files, not a {2} file, and it holds no {2} files.\n\n" +
+                        "Open it in the BSA Browser to see what is inside.",
+                        Path.GetFileName(bsaPath), CommonExtension(bsa), string.Join("/", extensions)),
+                        "Not a " + string.Join("/", extensions) + " file", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return null;
+                }
+                return PickEntry(owner, bsa, bsaPath, extensions);
+            }
+        }
+
+        static bool HasEntryWith(BsaArchive bsa, string[] extensions)
+        {
+            foreach (BsaEntry e in bsa.Entries)
+                foreach (string x in extensions)
+                    if (e.Name.EndsWith(x, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>The most common extension in an archive, e.g. ".3D".</summary>
+        static string CommonExtension(BsaArchive bsa)
+        {
+            Dictionary<string, int> counts = new Dictionary<string, int>();
+            string best = "";
+            int bestCount = 0;
+            foreach (BsaEntry e in bsa.Entries)
+            {
+                string x = Path.GetExtension(e.Name).ToUpperInvariant();
+                int n;
+                counts.TryGetValue(x, out n);
+                counts[x] = ++n;
+                if (n > bestCount) { bestCount = n; best = x; }
+            }
+            return best.Length > 0 ? best : "unnamed";
+        }
+
+        static LoadedFile PickEntry(IWin32Window owner, BsaArchive bsa, string bsaPath, string[] extensions)
+        {
             using (ArchivePicker picker = new ArchivePicker(bsa, extensions))
             {
                 if (picker.ShowDialog(owner) != DialogResult.OK || picker.Selected == null) return null;

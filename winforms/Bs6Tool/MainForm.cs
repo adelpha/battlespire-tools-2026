@@ -311,7 +311,7 @@ namespace Bs6Tool
         {
             try
             {
-                if (string.Equals(Path.GetExtension(path), ".bsa", StringComparison.OrdinalIgnoreCase))
+                if (FileSource.IsArchive(path))
                 {
                     LoadedFile f = FileSource.PickFromArchive(this, path, new string[] { ".BS6" });
                     if (f != null) Open(f);
