@@ -112,6 +112,12 @@ namespace CropTool
             whole.Width = 230;
             whole.Click += delegate { if (canvas.Image != null) canvas.Crop = new Rectangle(Point.Empty, canvas.Image.Size); };
             right.Controls.Add(whole);
+            Button fit = new Button();
+            fit.Text = "Fit box to visible pixels (all PNGs)";
+            fit.Width = 230;
+            fit.Click += delegate { FitToContent(); };
+            right.Controls.Add(fit);
+            right.Controls.Add(Hint("Scans every PNG in the list and sets the box to the smallest area that holds every non-transparent pixel in all of them."));
 
             right.Controls.Add(Caption("Save cropped images"));
             toFolder.Text = "To a copy of the folder tree in:";
@@ -293,6 +299,90 @@ namespace CropTool
         {
             if (syncing) return;
             canvas.Crop = new Rectangle((int)xBox.Value, (int)yBox.Value, (int)wBox.Value, (int)hBox.Value);
+        }
+
+        /// <summary>Union of the non-transparent pixels in one image, or an empty rectangle if it has none.</summary>
+        static Rectangle VisibleBounds(Bitmap b)
+        {
+            int w = b.Width, h = b.Height;
+            BitmapData bd = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            int[] row = new int[w];
+            int minX = w, minY = h, maxX = -1, maxY = -1;
+            try
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(new IntPtr(bd.Scan0.ToInt64() + (long)y * bd.Stride), row, 0, w);
+                    int first = -1, last = -1;
+                    for (int x = 0; x < w; x++)
+                        if ((row[x] & unchecked((int)0xFF000000)) != 0) { if (first < 0) first = x; last = x; }
+                    if (first < 0) continue;
+                    if (first < minX) minX = first;
+                    if (last > maxX) maxX = last;
+                    if (y < minY) minY = y;
+                    maxY = y;
+                }
+            }
+            finally { b.UnlockBits(bd); }
+            return maxX < 0 ? Rectangle.Empty : Rectangle.FromLTRB(minX, minY, maxX + 1, maxY + 1);
+        }
+
+        void FitToContent()
+        {
+            if (files.Count == 0) return;
+            Rectangle union = Rectangle.Empty;
+            int empty = 0, failed = 0, opaque = 0;
+            Size first = Size.Empty;
+            bool mixedSizes = false;
+            progress.Maximum = files.Count;
+            progress.Value = 0;
+            Enabled = false;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                for (int i = 0; i < files.Count; i++)
+                {
+                    try
+                    {
+                        using (Bitmap b = LoadImage(files[i]))
+                        {
+                            if (first.IsEmpty) first = b.Size; else if (b.Size != first) mixedSizes = true;
+                            Rectangle r = VisibleBounds(b);
+                            if (r.IsEmpty) empty++;
+                            else
+                            {
+                                if (r == new Rectangle(Point.Empty, b.Size)) opaque++;
+                                union = union.IsEmpty ? r : Rectangle.Union(union, r);
+                            }
+                        }
+                    }
+                    catch (Exception) { failed++; }
+                    progress.Value = i + 1;
+                    if (i % 10 == 0)
+                    {
+                        status.Text = string.Format("Scanning {0} of {1}...", i + 1, files.Count);
+                        Application.DoEvents();
+                    }
+                }
+            }
+            finally
+            {
+                Enabled = true;
+                Cursor = Cursors.Default;
+            }
+            if (union.IsEmpty)
+            {
+                status.Text = "No visible pixels found; every PNG is fully transparent.";
+                return;
+            }
+            canvas.Crop = union;
+            string msg = string.Format("Box fitted to the visible pixels of {0} PNG(s): {1} x {2} at ({3}, {4}).",
+                files.Count - empty - failed, union.Width, union.Height, union.X, union.Y);
+            if (empty > 0) msg += string.Format(" {0} fully transparent.", empty);
+            if (failed > 0) msg += string.Format(" {0} could not be read.", failed);
+            if (opaque == files.Count - empty - failed) msg += " None of them has transparent edges, so the box is the whole image.";
+            else if (mixedSizes) msg += " The images are not all the same size, so smaller ones may come out smaller.";
+            status.Text = msg;
         }
 
         void RunCrop()
@@ -550,6 +640,9 @@ namespace CropTool
             g.InterpolationMode = InterpolationMode.NearestNeighbor;
             g.PixelOffsetMode = PixelOffsetMode.Half;
             RectangleF all = ToScreen(new Rectangle(Point.Empty, image.Size));
+            // Checkerboard behind the image so transparent areas show up.
+            using (HatchBrush checks = new HatchBrush(HatchStyle.LargeCheckerBoard, Color.FromArgb(204, 204, 204), Color.White))
+                g.FillRectangle(checks, all);
             g.DrawImage(image, all);
             g.PixelOffsetMode = PixelOffsetMode.Default;
             if (crop.Width <= 0 || crop.Height <= 0) return;

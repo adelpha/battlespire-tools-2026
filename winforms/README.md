@@ -14,7 +14,7 @@ and every file in the shipped archives.
 | **Bs6Tool** (Level Viewer) | `bs6tool.py` | Chunk tree with decoded values, objects with model names resolved, top-down map of objects, flats and lights, XML and TSV export |
 | **RscTool** (Text Viewer) | `misc/rsctool.py` | Every TEXT.RSC string with its real id, search, control codes, TSV export |
 | **FlcTool** (FLC Viewer) | new | Plays the FLI/FLC talking-head animations in FLC.BSA or loose .FLC files, steps through frames, saves one frame, every frame of an animation, or every animation in an archive as PNGs |
-| **CropTool** (PNG Batch Crop) | new | Draw a crop box once on a sample PNG, then crop every PNG under a folder and its subfolders to it, into a copy of the folder tree or over the originals |
+| **CropTool** (PNG Batch Crop) | new | Draw a crop box once on a sample PNG, then crop every PNG under a folder and its subfolders to it, or to the smallest box holding every non-transparent pixel across all of them; saves into a copy of the folder tree or over the originals |
 | **BsiThumbnail** (Explorer thumbnails) | new | Shows .BSI files as thumbnails in Windows Explorer (first frame, game colours) |
 
 Every viewer can open a loose file or pick an entry straight out of a `.BSA`.
