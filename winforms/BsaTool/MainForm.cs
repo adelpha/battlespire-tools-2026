@@ -306,6 +306,19 @@ namespace BsaTool
                             openInViewer.Enabled = true;
                             break;
                         }
+                    case FileKind.Flic:
+                        {
+                            FlcFile anim = FlcFile.Parse(data);
+                            FlcDecoder dec = anim.CreateDecoder();
+                            if (anim.FrameCount > 0) dec.Seek(0);
+                            imageView.Image = dec.ToBitmap();
+                            imageView.Zoom = PixelView.DefaultZoomFor(anim.Width, anim.Height);
+                            ShowPreview(imageView);
+                            status.Text = string.Format("{0}: {1}x{2} animation, {3} frame(s), {4} ms per frame (first frame shown; open in viewer to play)",
+                                e.Name, anim.Width, anim.Height, anim.FrameCount, anim.FrameDelay);
+                            openInViewer.Enabled = true;
+                            return;
+                        }
                     case FileKind.Wave:
                         soundLabel.Text = head + "RIFF WAVE sound";
                         ShowPreview(soundPanel);
@@ -344,6 +357,7 @@ namespace BsaTool
                 case FileKind.Bsi: exe = "BsiTool.exe"; break;
                 case FileKind.Model3D: exe = "ModelTool.exe"; break;
                 case FileKind.Bs6: exe = "Bs6Tool.exe"; break;
+                case FileKind.Flic: exe = "FlcTool.exe"; break;
                 default: return;
             }
             string name = archive.SuggestFileName(previewEntry, previewData);

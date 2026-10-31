@@ -35,6 +35,7 @@
     <Compile Include="BsaArchive.cs" />
     <Compile Include="Bsi.cs" />
     <Compile Include="FileSniffer.cs" />
+    <Compile Include="Flc.cs" />
     <Compile Include="Lzss.cs" />
     <Compile Include="Model3D.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

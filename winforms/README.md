@@ -13,6 +13,7 @@ and every file in the shipped archives.
 | **ModelTool** (Model Viewer) | `3dtool.py` | Shaded 3D preview, face list with texture ids and UVs, OBJ (with UVs and normals) and PLY export, batch export of 3D.BSA |
 | **Bs6Tool** (Level Viewer) | `bs6tool.py` | Chunk tree with decoded values, objects with model names resolved, top-down map of objects, flats and lights, XML and TSV export |
 | **RscTool** (Text Viewer) | `misc/rsctool.py` | Every TEXT.RSC string with its real id, search, control codes, TSV export |
+| **FlcTool** (FLC Viewer) | new | Plays the FLI/FLC talking-head animations in FLC.BSA or loose .FLC files, steps through frames, saves one frame, every frame of an animation, or every animation in an archive as PNGs |
 | **BsiThumbnail** (Explorer thumbnails) | new | Shows .BSI files as thumbnails in Windows Explorer (first frame, game colours) |
 
 Every viewer can open a loose file or pick an entry straight out of a `.BSA`.
@@ -45,6 +46,10 @@ rights. Run it again to update the handler or turn thumbnails off (or use `BsiTh
 - Explorer caches thumbnails. If old blank icons remain, use Disk Cleanup's
   "Thumbnails" option.
 - Files inside `.BSA` archives are not shown; extract them with the BSA Browser first.
+
+## FLC animations
+
+FLC.BSA holds 163 Autodesk FLC animations (640x480, 8 bit, 71 ms per frame), the faces shown during conversations. Only the first frame is a full picture; every later frame stores just the pixels that changed (DELTA_FLC chunks), so a single frame can only be shown by playing every frame before it. FlcTool does that, so each exported PNG is the complete picture. The decoder handles the same chunk types as the game's own player (4, 7, 11, 12, 13, 15 and 16) and uses the ring frame to loop.
 
 ## Fixes compared with the Python tools
 
