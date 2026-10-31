@@ -4,34 +4,56 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Text;
 using System.Windows.Forms;
 
 namespace CropTool
 {
+    /// <summary>One folder that directly holds PNGs.</summary>
+    class ImageFolder
+    {
+        public string Dir;
+        public string Rel;          // relative to the input folder; "" for the input folder itself
+        public List<string> Files = new List<string>();
+        public bool FitKnown;       // Fit has been worked out
+        public Rectangle Fit;       // union of the visible pixels of every PNG; empty if all transparent
+        public int Transparent;     // PNGs with no visible pixels
+        public int Unreadable;
+
+        public override string ToString()
+        {
+            return string.Format("{0}  ({1})", Rel.Length == 0 ? "(input folder itself)" : Rel, Files.Count);
+        }
+    }
+
     /// <summary>
-    /// Batch cropper: draw a crop box once on a sample image, then crop every image
-    /// found under a folder (and its subfolders) to that box.
+    /// Batch cropper. Every folder of PNGs under the input folder is written to the same
+    /// relative folder under the output folder. A ticked folder is cropped to the smallest
+    /// box that holds the visible pixels of all its own PNGs; an unticked folder is
+    /// cropped to the box drawn by hand.
     /// </summary>
     public class MainForm : Form
     {
-                readonly TextBox folderBox = new TextBox();
+        readonly TextBox folderBox = new TextBox();
         readonly CheckBox recurse = new CheckBox();
+        readonly TextBox outBox = new TextBox();
+        readonly CheckedListBox folderList = new CheckedListBox();
         readonly ListBox fileList = new ListBox();
         readonly CropCanvas canvas = new CropCanvas();
         readonly NumericUpDown xBox = new NumericUpDown(), yBox = new NumericUpDown(), wBox = new NumericUpDown(), hBox = new NumericUpDown();
-        readonly RadioButton toFolder = new RadioButton(), overwrite = new RadioButton();
-        readonly TextBox outBox = new TextBox();
+        readonly CheckBox overwrite = new CheckBox();
         readonly Button runButton = new Button();
         readonly ProgressBar progress = new ProgressBar();
+        readonly TextBox log = new TextBox();
         readonly ToolStripStatusLabel status = new ToolStripStatusLabel();
-        readonly List<string> files = new List<string>();
+        readonly List<ImageFolder> folders = new List<ImageFolder>();
         string root;
         bool syncing;
 
         public MainForm(string path)
         {
             Text = "Battlespire PNG Batch Crop";
-            Size = new Size(1100, 760);
+            Size = new Size(1180, 800);
             AllowDrop = true;
             DragEnter += delegate(object s, DragEventArgs e) { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };
             DragDrop += delegate(object s, DragEventArgs e)
@@ -40,63 +62,71 @@ namespace CropTool
                 if (f.Length > 0) OpenFolder(Directory.Exists(f[0]) ? f[0] : Path.GetDirectoryName(f[0]));
             };
 
-            // Top: folder picker.
-            Panel top = new Panel();
-            top.Dock = DockStyle.Top;
-            top.Height = 32;
-            top.Padding = new Padding(6, 5, 6, 3);
-            Label fl = new Label();
-            fl.Text = "Folder:";
-            fl.AutoSize = false;
-            fl.Width = 50;
-            fl.Dock = DockStyle.Left;
-            fl.TextAlign = ContentAlignment.MiddleLeft;
-            folderBox.Dock = DockStyle.Fill;
+            // Top: input and output folders.
+            Panel inRow = PathRow("Input:", folderBox, delegate { BrowseFolder(); });
             folderBox.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { OpenFolder(folderBox.Text); e.SuppressKeyPress = true; } };
-            Button browse = new Button();
-            browse.Text = "Browse...";
-            browse.Dock = DockStyle.Right;
-            browse.Width = 80;
-            browse.Click += delegate { BrowseFolder(); };
             recurse.Text = "Include subfolders";
             recurse.Checked = true;
-            recurse.AutoSize = false;
             recurse.Width = 140;
             recurse.Dock = DockStyle.Right;
             recurse.Padding = new Padding(10, 0, 0, 0);
             recurse.CheckedChanged += delegate { if (root != null) OpenFolder(root); };
-            top.Controls.Add(fl);
-            top.Controls.Add(recurse);
-            top.Controls.Add(browse);
-            top.Controls.Add(folderBox);
+            inRow.Controls.Add(recurse);
             folderBox.BringToFront();
+            Panel outRow = PathRow("Output:", outBox, delegate { BrowseOutput(); });
+            overwrite.Text = "Overwrite the originals instead";
+            overwrite.Width = 210;
+            overwrite.Dock = DockStyle.Right;
+            overwrite.Padding = new Padding(10, 0, 0, 0);
+            overwrite.CheckedChanged += delegate { outBox.Enabled = !overwrite.Checked; };
+            outRow.Controls.Add(overwrite);
+            outBox.BringToFront();
 
-            // Left: images found.
+            // Left: folders (ticked = fit automatically) and the PNGs of the selected one.
             Panel left = new Panel();
             left.Dock = DockStyle.Left;
-            left.Width = 250;
+            left.Width = 290;
             left.Padding = new Padding(6, 0, 0, 6);
+            folderList.Dock = DockStyle.Top;
+            folderList.Height = 300;
+            folderList.IntegralHeight = false;
+            folderList.CheckOnClick = true;
+            folderList.HorizontalScrollbar = true;
+            folderList.SelectedIndexChanged += delegate { ShowFolder(folderList.SelectedIndex); };
+            folderList.ItemCheck += delegate { BeginInvoke(new MethodInvoker(delegate { ShowFolder(folderList.SelectedIndex); })); };
+            FlowLayoutPanel tickRow = new FlowLayoutPanel();
+            tickRow.Dock = DockStyle.Top;
+            tickRow.Height = 30;
+            Button tickAll = new Button();
+            tickAll.Text = "Tick all";
+            tickAll.Click += delegate { SetAllTicks(true); };
+            Button untickAll = new Button();
+            untickAll.Text = "Untick all";
+            untickAll.Click += delegate { SetAllTicks(false); };
+            tickRow.Controls.Add(tickAll);
+            tickRow.Controls.Add(untickAll);
             fileList.Dock = DockStyle.Fill;
             fileList.IntegralHeight = false;
             fileList.HorizontalScrollbar = true;
-            fileList.SelectedIndexChanged += delegate { ShowSample(fileList.SelectedIndex); };
-            Label ll = new Label();
-            ll.Text = "PNG images (pick one to draw the box on)";
-            ll.Dock = DockStyle.Top;
-            ll.Height = 18;
+            fileList.SelectedIndexChanged += delegate { ShowSample(); };
             left.Controls.Add(fileList);
-            left.Controls.Add(ll);
+            left.Controls.Add(TopLabel("PNGs in the selected folder"));
+            left.Controls.Add(tickRow);
+            left.Controls.Add(folderList);
+            left.Controls.Add(TopLabel("Folders (ticked = fit to its own visible pixels)"));
 
-            // Right: crop box and run settings.
+            // Right: hand-drawn box, run and log.
             FlowLayoutPanel right = new FlowLayoutPanel();
             right.Dock = DockStyle.Right;
-            right.Width = 250;
+            right.Width = 260;
             right.FlowDirection = FlowDirection.TopDown;
             right.WrapContents = false;
             right.Padding = new Padding(6, 0, 6, 6);
 
-            right.Controls.Add(Caption("Crop box (pixels)"));
-            right.Controls.Add(Hint("Drag on the image to draw a box. Drag inside it to move it, or drag its edges and corners to resize it."));
+            right.Controls.Add(Caption("How folders are cropped"));
+            right.Controls.Add(Hint("Ticked folders: each is cropped to the smallest box that holds every visible pixel of its own PNGs (shown in cyan)."));
+            right.Controls.Add(Hint("Unticked folders: cropped to the yellow box you draw. Drag on the image to draw it; drag inside or on its edges to move or resize it."));
+            right.Controls.Add(Caption("Yellow box (pixels)"));
             right.Controls.Add(Row("X", xBox));
             right.Controls.Add(Row("Y", yBox));
             right.Controls.Add(Row("Width", wBox));
@@ -109,42 +139,27 @@ namespace CropTool
             }
             Button whole = new Button();
             whole.Text = "Select whole image";
-            whole.Width = 230;
+            whole.Width = 240;
             whole.Click += delegate { if (canvas.Image != null) canvas.Crop = new Rectangle(Point.Empty, canvas.Image.Size); };
             right.Controls.Add(whole);
-            Button fit = new Button();
-            fit.Text = "Fit box to visible pixels (all PNGs)";
-            fit.Width = 230;
-            fit.Click += delegate { FitToContent(); };
-            right.Controls.Add(fit);
-            right.Controls.Add(Hint("Scans every PNG in the list and sets the box to the smallest area that holds every non-transparent pixel in all of them."));
 
-            right.Controls.Add(Caption("Save cropped images"));
-            toFolder.Text = "To a copy of the folder tree in:";
-            toFolder.AutoSize = true;
-            toFolder.Checked = true;
-            toFolder.CheckedChanged += delegate { outBox.Enabled = toFolder.Checked; };
-            outBox.Width = 230;
-            Button outBrowse = new Button();
-            outBrowse.Text = "Choose output folder...";
-            outBrowse.Width = 230;
-            outBrowse.Click += delegate { BrowseOutput(); };
-            overwrite.Text = "Over the original files";
-            overwrite.AutoSize = true;
-            right.Controls.Add(toFolder);
-            right.Controls.Add(outBox);
-            right.Controls.Add(outBrowse);
-            right.Controls.Add(overwrite);
-
-            runButton.Text = "Crop all images";
-            runButton.Width = 230;
+            runButton.Text = "Crop every folder";
+            runButton.Width = 240;
             runButton.Height = 32;
             runButton.Margin = new Padding(3, 14, 3, 3);
             runButton.Enabled = false;
             runButton.Click += delegate { RunCrop(); };
             right.Controls.Add(runButton);
-            progress.Width = 230;
+            progress.Width = 240;
             right.Controls.Add(progress);
+            log.Multiline = true;
+            log.ReadOnly = true;
+            log.ScrollBars = ScrollBars.Both;
+            log.WordWrap = false;
+            log.Width = 240;
+            log.Height = 220;
+            log.BackColor = SystemColors.Window;
+            right.Controls.Add(log);
 
             canvas.Dock = DockStyle.Fill;
             canvas.CropChanged += delegate { CropChangedOnCanvas(); };
@@ -152,16 +167,50 @@ namespace CropTool
             StatusStrip bar = new StatusStrip();
             status.Spring = true;
             status.TextAlign = ContentAlignment.MiddleLeft;
-            status.Text = "Choose the folder that holds the exported frames.";
+            status.Text = "Choose the input folder that holds the folders of frames.";
             bar.Items.Add(status);
 
             Controls.Add(canvas);
             Controls.Add(left);
             Controls.Add(right);
-            Controls.Add(top);
+            Controls.Add(outRow);
+            Controls.Add(inRow);
             Controls.Add(bar);
 
             Load += delegate { if (!string.IsNullOrEmpty(path)) OpenFolder(path); };
+        }
+
+        static Panel PathRow(string label, TextBox box, EventHandler browse)
+        {
+            Panel row = new Panel();
+            row.Dock = DockStyle.Top;
+            row.Height = 30;
+            row.Padding = new Padding(6, 4, 6, 2);
+            Label l = new Label();
+            l.Text = label;
+            l.Width = 55;
+            l.Dock = DockStyle.Left;
+            l.TextAlign = ContentAlignment.MiddleLeft;
+            box.Dock = DockStyle.Fill;
+            Button b = new Button();
+            b.Text = "Browse...";
+            b.Dock = DockStyle.Right;
+            b.Width = 80;
+            b.Click += browse;
+            row.Controls.Add(l);
+            row.Controls.Add(b);
+            row.Controls.Add(box);
+            return row;
+        }
+
+        static Label TopLabel(string text)
+        {
+            Label l = new Label();
+            l.Text = text;
+            l.Dock = DockStyle.Top;
+            l.Height = 20;
+            l.TextAlign = ContentAlignment.BottomLeft;
+            return l;
         }
 
         static Label Caption(string text)
@@ -178,9 +227,10 @@ namespace CropTool
         {
             Label l = new Label();
             l.Text = text;
-            l.MaximumSize = new Size(230, 0);
+            l.MaximumSize = new Size(240, 0);
             l.AutoSize = true;
             l.ForeColor = SystemColors.GrayText;
+            l.Margin = new Padding(3, 2, 3, 4);
             return l;
         }
 
@@ -203,7 +253,7 @@ namespace CropTool
         {
             using (FolderBrowserDialog dlg = new FolderBrowserDialog())
             {
-                dlg.Description = "Choose the folder that holds the PNGs (for example the folder you exported FLC frames to).";
+                dlg.Description = "Choose the input folder (for example the folder you exported FLC frames to).";
                 if (root != null) dlg.SelectedPath = root;
                 if (dlg.ShowDialog(this) == DialogResult.OK) OpenFolder(dlg.SelectedPath);
             }
@@ -213,8 +263,9 @@ namespace CropTool
         {
             using (FolderBrowserDialog dlg = new FolderBrowserDialog())
             {
-                dlg.Description = "Save the cropped images (same subfolders and names) to:";
-                if (dlg.ShowDialog(this) == DialogResult.OK) { outBox.Text = dlg.SelectedPath; toFolder.Checked = true; }
+                dlg.Description = "Write the cropped folders (same names and layout as the input) to:";
+                if (outBox.Text.Length > 0 && Directory.Exists(outBox.Text)) dlg.SelectedPath = outBox.Text;
+                if (dlg.ShowDialog(this) == DialogResult.OK) { outBox.Text = dlg.SelectedPath; overwrite.Checked = false; }
             }
         }
 
@@ -230,33 +281,59 @@ namespace CropTool
                 MessageBox.Show(this, "Folder not found: " + path, Text);
                 return;
             }
-            root = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string newRoot = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (outBox.Text.Length == 0 || root == null || outBox.Text == root + "_cropped") outBox.Text = newRoot + "_cropped";
+            root = newRoot;
             folderBox.Text = root;
-            outBox.Text = root + "_cropped";
-            files.Clear();
+            folders.Clear();
+            Dictionary<string, ImageFolder> byDir = new Dictionary<string, ImageFolder>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 foreach (string f in Directory.GetFiles(root, "*", recurse.Checked ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly))
-                    if (IsImage(f)) files.Add(f);
+                {
+                    if (!IsImage(f)) continue;
+                    string dir = Path.GetDirectoryName(f);
+                    ImageFolder g;
+                    if (!byDir.TryGetValue(dir, out g))
+                    {
+                        g = new ImageFolder();
+                        g.Dir = dir;
+                        g.Rel = Relative(dir);
+                        byDir.Add(dir, g);
+                        folders.Add(g);
+                    }
+                    g.Files.Add(f);
+                }
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, "Could not list " + root + ":\r\n" + ex.Message, Text);
             }
-            files.Sort(StringComparer.OrdinalIgnoreCase);
-            fileList.BeginUpdate();
-            fileList.Items.Clear();
-            foreach (string f in files) fileList.Items.Add(Relative(f));
-            fileList.EndUpdate();
-            runButton.Enabled = files.Count > 0;
-            status.Text = string.Format("{0} PNG(s) found under {1}", files.Count, root);
-            if (files.Count > 0) fileList.SelectedIndex = 0;
-            else canvas.Image = null;
+            folders.Sort(delegate(ImageFolder a, ImageFolder b) { return string.Compare(a.Rel, b.Rel, StringComparison.OrdinalIgnoreCase); });
+            int total = 0;
+            folderList.BeginUpdate();
+            folderList.Items.Clear();
+            foreach (ImageFolder g in folders)
+            {
+                g.Files.Sort(StringComparer.OrdinalIgnoreCase);
+                total += g.Files.Count;
+                folderList.Items.Add(g, true);
+            }
+            folderList.EndUpdate();
+            runButton.Enabled = folders.Count > 0;
+            status.Text = string.Format("{0} PNG(s) in {1} folder(s) under {2}", total, folders.Count, root);
+            if (folders.Count > 0) folderList.SelectedIndex = 0;
+            else { fileList.Items.Clear(); canvas.Image = null; canvas.AutoBox = Rectangle.Empty; }
         }
 
-        string Relative(string file)
+        string Relative(string path)
         {
-            return file.Length > root.Length ? file.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : file;
+            return path.Length > root.Length ? path.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : "";
+        }
+
+        void SetAllTicks(bool on)
+        {
+            for (int i = 0; i < folderList.Items.Count; i++) folderList.SetItemChecked(i, on);
         }
 
         /// <summary>Loads an image without keeping the file open, so it can be overwritten.</summary>
@@ -267,20 +344,62 @@ namespace CropTool
                 return new Bitmap(img);
         }
 
-        void ShowSample(int index)
+        ImageFolder SelectedFolder
         {
-            if (index < 0 || index >= files.Count) return;
+            get { int i = folderList.SelectedIndex; return i >= 0 && i < folders.Count ? folders[i] : null; }
+        }
+
+        void ShowFolder(int index)
+        {
+            if (index < 0 || index >= folders.Count) return;
+            ImageFolder g = folders[index];
+            if (fileList.Tag != g)
+            {
+                fileList.Tag = g;
+                fileList.BeginUpdate();
+                fileList.Items.Clear();
+                foreach (string f in g.Files) fileList.Items.Add(Path.GetFileName(f));
+                fileList.EndUpdate();
+                if (g.Files.Count > 0) fileList.SelectedIndex = 0;
+            }
+            if (folderList.GetItemChecked(index))
+            {
+                ComputeFit(g);
+                canvas.AutoBox = g.Fit;
+                status.Text = DescribeFit(g);
+            }
+            else
+            {
+                canvas.AutoBox = Rectangle.Empty;
+                status.Text = (g.Rel.Length == 0 ? "Input folder" : g.Rel) + ": unticked, so it will be cropped to the yellow box.";
+            }
+        }
+
+        static string DescribeFit(ImageFolder g)
+        {
+            string name = g.Rel.Length == 0 ? "Input folder" : g.Rel;
+            if (g.Fit.IsEmpty) return name + ": every PNG is fully transparent, so it will be skipped.";
+            string s = string.Format("{0}: fitted box {1} x {2} at ({3}, {4}) from {5} PNG(s).", name, g.Fit.Width, g.Fit.Height, g.Fit.X, g.Fit.Y, g.Files.Count);
+            if (g.Transparent > 0) s += string.Format(" {0} fully transparent.", g.Transparent);
+            if (g.Unreadable > 0) s += string.Format(" {0} unreadable.", g.Unreadable);
+            return s;
+        }
+
+        void ShowSample()
+        {
+            ImageFolder g = fileList.Tag as ImageFolder;
+            int i = fileList.SelectedIndex;
+            if (g == null || i < 0 || i >= g.Files.Count) return;
             try
             {
-                Bitmap b = LoadImage(files[index]);
+                Bitmap b = LoadImage(g.Files[i]);
                 Image old = canvas.Image;
                 canvas.Image = b;
                 if (old != null) old.Dispose();
-                status.Text = string.Format("{0}: {1} x {2}", Relative(files[index]), b.Width, b.Height);
             }
             catch (Exception ex)
             {
-                status.Text = Relative(files[index]) + ": " + ex.Message;
+                status.Text = Path.GetFileName(g.Files[i]) + ": " + ex.Message;
             }
         }
 
@@ -301,7 +420,7 @@ namespace CropTool
             canvas.Crop = new Rectangle((int)xBox.Value, (int)yBox.Value, (int)wBox.Value, (int)hBox.Value);
         }
 
-        /// <summary>Union of the non-transparent pixels in one image, or an empty rectangle if it has none.</summary>
+        /// <summary>Bounds of the non-transparent pixels in one image, or an empty rectangle if it has none.</summary>
         static Rectangle VisibleBounds(Bitmap b)
         {
             int w = b.Width, h = b.Height;
@@ -327,132 +446,129 @@ namespace CropTool
             return maxX < 0 ? Rectangle.Empty : Rectangle.FromLTRB(minX, minY, maxX + 1, maxY + 1);
         }
 
-        void FitToContent()
+        /// <summary>Works out (once) the box that holds the visible pixels of every PNG in a folder.</summary>
+        void ComputeFit(ImageFolder g)
         {
-            if (files.Count == 0) return;
+            if (g.FitKnown) return;
             Rectangle union = Rectangle.Empty;
-            int empty = 0, failed = 0, opaque = 0;
-            Size first = Size.Empty;
-            bool mixedSizes = false;
-            progress.Maximum = files.Count;
-            progress.Value = 0;
-            Enabled = false;
+            g.Transparent = g.Unreadable = 0;
+            Cursor old = Cursor;
             Cursor = Cursors.WaitCursor;
             try
             {
-                for (int i = 0; i < files.Count; i++)
+                for (int i = 0; i < g.Files.Count; i++)
                 {
                     try
                     {
-                        using (Bitmap b = LoadImage(files[i]))
+                        using (Bitmap b = LoadImage(g.Files[i]))
                         {
-                            if (first.IsEmpty) first = b.Size; else if (b.Size != first) mixedSizes = true;
                             Rectangle r = VisibleBounds(b);
-                            if (r.IsEmpty) empty++;
-                            else
-                            {
-                                if (r == new Rectangle(Point.Empty, b.Size)) opaque++;
-                                union = union.IsEmpty ? r : Rectangle.Union(union, r);
-                            }
+                            if (r.IsEmpty) g.Transparent++;
+                            else union = union.IsEmpty ? r : Rectangle.Union(union, r);
                         }
                     }
-                    catch (Exception) { failed++; }
-                    progress.Value = i + 1;
-                    if (i % 10 == 0)
-                    {
-                        status.Text = string.Format("Scanning {0} of {1}...", i + 1, files.Count);
-                        Application.DoEvents();
-                    }
+                    catch (Exception) { g.Unreadable++; }
                 }
             }
-            finally
-            {
-                Enabled = true;
-                Cursor = Cursors.Default;
-            }
-            if (union.IsEmpty)
-            {
-                status.Text = "No visible pixels found; every PNG is fully transparent.";
-                return;
-            }
-            canvas.Crop = union;
-            string msg = string.Format("Box fitted to the visible pixels of {0} PNG(s): {1} x {2} at ({3}, {4}).",
-                files.Count - empty - failed, union.Width, union.Height, union.X, union.Y);
-            if (empty > 0) msg += string.Format(" {0} fully transparent.", empty);
-            if (failed > 0) msg += string.Format(" {0} could not be read.", failed);
-            if (opaque == files.Count - empty - failed) msg += " None of them has transparent edges, so the box is the whole image.";
-            else if (mixedSizes) msg += " The images are not all the same size, so smaller ones may come out smaller.";
-            status.Text = msg;
+            finally { Cursor = old; }
+            g.Fit = union;
+            g.FitKnown = true;
         }
 
         void RunCrop()
         {
-            Rectangle crop = canvas.Crop;
-            if (crop.Width <= 0 || crop.Height <= 0)
+            Rectangle manual = canvas.Crop;
+            List<ImageFolder> todo = new List<ImageFolder>();
+            bool needManual = false;
+            for (int i = 0; i < folders.Count; i++)
             {
-                MessageBox.Show(this, "Draw a crop box on the image first.", Text);
+                todo.Add(folders[i]);
+                if (!folderList.GetItemChecked(i)) needManual = true;
+            }
+            if (needManual && (manual.Width <= 0 || manual.Height <= 0))
+            {
+                MessageBox.Show(this, "Some folders are unticked, so they use the yellow box, but no box is drawn. Draw one, or tick every folder.", Text);
                 return;
             }
             string outRoot = null;
-            if (toFolder.Checked)
+            if (!overwrite.Checked)
             {
                 outRoot = outBox.Text.Trim();
                 if (outRoot.Length == 0) { MessageBox.Show(this, "Choose an output folder.", Text); return; }
-                outRoot = Path.GetFullPath(outRoot);
-                if (string.Equals(outRoot.TrimEnd('\\', '/'), root, StringComparison.OrdinalIgnoreCase))
+                outRoot = Path.GetFullPath(outRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.Equals(outRoot, root, StringComparison.OrdinalIgnoreCase))
                 {
-                    MessageBox.Show(this, "The output folder is the same as the source folder. Choose another folder, or pick \"Over the original files\".", Text);
+                    MessageBox.Show(this, "The output folder is the input folder. Choose another one, or tick \"Overwrite the originals instead\".", Text);
                     return;
                 }
+                // Leave out anything that is already inside the output folder.
+                todo.RemoveAll(delegate(ImageFolder g)
+                {
+                    return string.Equals(g.Dir, outRoot, StringComparison.OrdinalIgnoreCase)
+                        || g.Dir.StartsWith(outRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                });
             }
-            else if (MessageBox.Show(this, string.Format("Crop {0} image(s) to {1} x {2} at ({3}, {4}) and overwrite the originals?\r\n\r\nThis cannot be undone.",
-                         files.Count, crop.Width, crop.Height, crop.X, crop.Y), Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            else if (MessageBox.Show(this, "Crop every PNG in " + todo.Count + " folder(s) and overwrite the originals?\r\n\r\nThis cannot be undone.",
+                         Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
                 return;
 
-            // Never crop the cropped copies again if the output folder is inside the source.
-            List<string> todo = new List<string>();
-            foreach (string f in files)
-                if (outRoot == null || !f.StartsWith(outRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) todo.Add(f);
-
-            int done = 0, skipped = 0, failed = 0;
-            string firstError = null;
-            progress.Maximum = Math.Max(1, todo.Count);
+            int totalFiles = 0;
+            foreach (ImageFolder g in todo) totalFiles += g.Files.Count;
+            progress.Maximum = Math.Max(1, totalFiles * 2);
             progress.Value = 0;
+            StringBuilder report = new StringBuilder();
+            int done = 0, failed = 0, skippedFolders = 0, step = 0;
             Enabled = false;
             Cursor = Cursors.WaitCursor;
             try
             {
-                for (int i = 0; i < todo.Count; i++)
+                foreach (ImageFolder g in todo)
                 {
-                    string src = todo[i];
-                    try
+                    string name = g.Rel.Length == 0 ? "(input folder)" : g.Rel;
+                    bool auto = folderList.GetItemChecked(folders.IndexOf(g));
+                    status.Text = (auto ? "Fitting and cropping " : "Cropping ") + name + "...";
+                    Application.DoEvents();
+                    if (auto) ComputeFit(g);
+                    step += g.Files.Count;
+                    progress.Value = Math.Min(progress.Maximum, step);
+                    Rectangle box = auto ? g.Fit : manual;
+                    if (box.Width <= 0 || box.Height <= 0)
                     {
-                        using (Bitmap b = LoadImage(src))
+                        report.AppendFormat("{0}: skipped, every PNG is fully transparent\r\n", name);
+                        skippedFolders++;
+                        step += g.Files.Count;
+                        continue;
+                    }
+                    int ok = 0, bad = 0;
+                    string outDir = outRoot == null ? g.Dir : (g.Rel.Length == 0 ? outRoot : Path.Combine(outRoot, g.Rel));
+                    foreach (string src in g.Files)
+                    {
+                        try
                         {
-                            Rectangle r = Rectangle.Intersect(crop, new Rectangle(Point.Empty, b.Size));
-                            if (r.Width <= 0 || r.Height <= 0) { skipped++; continue; }
-                            string dst = outRoot == null ? src : Path.Combine(outRoot, Relative(src));
-                            string dir = Path.GetDirectoryName(dst);
-                            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                            using (Bitmap c = b.Clone(r, b.PixelFormat))
-                                c.Save(dst, ImageFormat.Png);
-                            done++;
+                            using (Bitmap b = LoadImage(src))
+                            {
+                                Rectangle r = Rectangle.Intersect(box, new Rectangle(Point.Empty, b.Size));
+                                if (r.Width <= 0 || r.Height <= 0) throw new InvalidOperationException("the box lies outside this image");
+                                if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+                                using (Bitmap c = b.Clone(r, b.PixelFormat))
+                                    c.Save(Path.Combine(outDir, Path.GetFileName(src)), ImageFormat.Png);
+                                ok++;
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        failed++;
-                        if (firstError == null) firstError = Relative(src) + ": " + ex.Message;
-                    }
-                    finally
-                    {
-                        progress.Value = i + 1;
-                        if (i % 10 == 0)
+                        catch (Exception ex)
                         {
-                            status.Text = string.Format("Cropping {0} of {1}...", i + 1, todo.Count);
-                            Application.DoEvents();
+                            bad++;
+                            report.AppendFormat("  {0}: {1}\r\n", Path.GetFileName(src), ex.Message);
                         }
+                        progress.Value = Math.Min(progress.Maximum, ++step);
+                        if (step % 10 == 0) Application.DoEvents();
                     }
+                    done += ok;
+                    failed += bad;
+                    report.AppendFormat("{0}: {1} PNG(s) cropped to {2} x {3} at ({4}, {5}){6}{7}\r\n", name, ok, box.Width, box.Height, box.X, box.Y,
+                        auto ? ", fitted" : ", yellow box", bad > 0 ? ", " + bad + " failed" : "");
+                    // The originals have changed size, so a fitted box must be worked out again.
+                    if (outRoot == null) g.FitKnown = false;
                 }
             }
             finally
@@ -460,13 +576,12 @@ namespace CropTool
                 Enabled = true;
                 Cursor = Cursors.Default;
             }
-            string msg = string.Format("Cropped {0} image(s) to {1} x {2}{3}.", done, crop.Width, crop.Height,
-                outRoot != null ? " in " + outRoot : "");
-            if (skipped > 0) msg += string.Format(" {0} skipped (smaller than the box's position).", skipped);
-            if (failed > 0) msg += string.Format(" {0} failed; first: {1}", failed, firstError);
-            status.Text = msg;
-            if (failed > 0) MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            if (outRoot == null && fileList.SelectedIndex >= 0) ShowSample(fileList.SelectedIndex);
+            log.Text = report.ToString();
+            status.Text = string.Format("Cropped {0} PNG(s) in {1} folder(s){2}{3}{4}.", done, todo.Count - skippedFolders,
+                outRoot != null ? " into " + outRoot : "",
+                skippedFolders > 0 ? "; " + skippedFolders + " folder(s) skipped" : "",
+                failed > 0 ? "; " + failed + " failed (see the list on the right)" : "");
+            if (outRoot == null) ShowSample();
         }
     }
 
@@ -498,6 +613,15 @@ namespace CropTool
         {
             get { return image; }
             set { image = value; Invalidate(); }
+        }
+
+        Rectangle autoBox;
+
+        /// <summary>A box drawn for reference only (the fitted box of a ticked folder).</summary>
+        public Rectangle AutoBox
+        {
+            get { return autoBox; }
+            set { if (value != autoBox) { autoBox = value; Invalidate(); } }
         }
 
         /// <summary>The crop box in image pixels.</summary>
@@ -645,6 +769,20 @@ namespace CropTool
                 g.FillRectangle(checks, all);
             g.DrawImage(image, all);
             g.PixelOffsetMode = PixelOffsetMode.Default;
+            if (autoBox.Width > 0 && autoBox.Height > 0)
+            {
+                RectangleF a = ToScreen(autoBox);
+                using (Pen cyan = new Pen(Color.Cyan, 2))
+                {
+                    cyan.DashStyle = DashStyle.Dash;
+                    g.DrawRectangle(cyan, a.X, a.Y, a.Width, a.Height);
+                }
+                string al = string.Format("fitted {0} x {1} at ({2}, {3})", autoBox.Width, autoBox.Height, autoBox.X, autoBox.Y);
+                SizeF als = g.MeasureString(al, Font);
+                float aly = a.Bottom + 4 + als.Height <= ClientSize.Height ? a.Bottom + 4 : a.Top - als.Height - 4;
+                g.FillRectangle(Brushes.Black, a.Left, aly, als.Width + 4, als.Height);
+                g.DrawString(al, Font, Brushes.Cyan, a.Left + 2, aly);
+            }
             if (crop.Width <= 0 || crop.Height <= 0) return;
 
             RectangleF r = ToScreen(crop);
