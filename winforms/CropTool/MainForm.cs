@@ -42,6 +42,7 @@ namespace CropTool
         readonly CropCanvas canvas = new CropCanvas();
         readonly NumericUpDown xBox = new NumericUpDown(), yBox = new NumericUpDown(), wBox = new NumericUpDown(), hBox = new NumericUpDown();
         readonly CheckBox overwrite = new CheckBox();
+        readonly NumericUpDown minAlphaBox = new NumericUpDown();
         readonly Button runButton = new Button();
         readonly ProgressBar progress = new ProgressBar();
         readonly TextBox log = new TextBox();
@@ -126,6 +127,17 @@ namespace CropTool
             right.Controls.Add(Caption("How folders are cropped"));
             right.Controls.Add(Hint("Ticked folders: each is cropped to the smallest box that holds every visible pixel of its own PNGs (shown in cyan)."));
             right.Controls.Add(Hint("Unticked folders: cropped to the yellow box you draw. Drag on the image to draw it; drag inside or on its edges to move or resize it."));
+            right.Controls.Add(Row("Minimum opacity", minAlphaBox, 120));
+            right.Controls.Add(Hint("Pixels with alpha below this (1 to 255) are ignored when fitting. 1 counts every pixel that isn't fully transparent; 255 counts only fully opaque ones."));
+            minAlphaBox.Minimum = 1;
+            minAlphaBox.Maximum = 255;
+            minAlphaBox.Value = 1;
+            minAlphaBox.Width = 80;
+            minAlphaBox.ValueChanged += delegate
+            {
+                foreach (ImageFolder f in folders) f.FitKnown = false;
+                ShowFolder(folderList.SelectedIndex);
+            };
             right.Controls.Add(Caption("Yellow box (pixels)"));
             right.Controls.Add(Row("X", xBox));
             right.Controls.Add(Row("Y", yBox));
@@ -236,12 +248,17 @@ namespace CropTool
 
         static Control Row(string label, Control c)
         {
+            return Row(label, c, 60);
+        }
+
+        static Control Row(string label, Control c, int labelWidth)
+        {
             FlowLayoutPanel p = new FlowLayoutPanel();
             p.AutoSize = true;
             p.Margin = new Padding(0);
             Label l = new Label();
             l.Text = label;
-            l.Width = 60;
+            l.Width = labelWidth;
             l.TextAlign = ContentAlignment.MiddleLeft;
             l.Margin = new Padding(3, 5, 3, 3);
             p.Controls.Add(l);
@@ -378,9 +395,9 @@ namespace CropTool
         static string DescribeFit(ImageFolder g)
         {
             string name = g.Rel.Length == 0 ? "Input folder" : g.Rel;
-            if (g.Fit.IsEmpty) return name + ": every PNG is fully transparent, so it will be skipped.";
+            if (g.Fit.IsEmpty) return name + ": no pixel in any PNG reaches the minimum opacity, so it will be skipped.";
             string s = string.Format("{0}: fitted box {1} x {2} at ({3}, {4}) from {5} PNG(s).", name, g.Fit.Width, g.Fit.Height, g.Fit.X, g.Fit.Y, g.Files.Count);
-            if (g.Transparent > 0) s += string.Format(" {0} fully transparent.", g.Transparent);
+            if (g.Transparent > 0) s += string.Format(" {0} with no pixel at the minimum opacity.", g.Transparent);
             if (g.Unreadable > 0) s += string.Format(" {0} unreadable.", g.Unreadable);
             return s;
         }
@@ -421,7 +438,7 @@ namespace CropTool
         }
 
         /// <summary>Bounds of the non-transparent pixels in one image, or an empty rectangle if it has none.</summary>
-        static Rectangle VisibleBounds(Bitmap b)
+        static Rectangle VisibleBounds(Bitmap b, int minAlpha)
         {
             int w = b.Width, h = b.Height;
             BitmapData bd = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
@@ -434,7 +451,7 @@ namespace CropTool
                     System.Runtime.InteropServices.Marshal.Copy(new IntPtr(bd.Scan0.ToInt64() + (long)y * bd.Stride), row, 0, w);
                     int first = -1, last = -1;
                     for (int x = 0; x < w; x++)
-                        if ((row[x] & unchecked((int)0xFF000000)) != 0) { if (first < 0) first = x; last = x; }
+                        if ((int)((uint)row[x] >> 24) >= minAlpha) { if (first < 0) first = x; last = x; }
                     if (first < 0) continue;
                     if (first < minX) minX = first;
                     if (last > maxX) maxX = last;
@@ -451,6 +468,7 @@ namespace CropTool
         {
             if (g.FitKnown) return;
             Rectangle union = Rectangle.Empty;
+            int minAlpha = (int)minAlphaBox.Value;
             g.Transparent = g.Unreadable = 0;
             Cursor old = Cursor;
             Cursor = Cursors.WaitCursor;
@@ -462,7 +480,7 @@ namespace CropTool
                     {
                         using (Bitmap b = LoadImage(g.Files[i]))
                         {
-                            Rectangle r = VisibleBounds(b);
+                            Rectangle r = VisibleBounds(b, minAlpha);
                             if (r.IsEmpty) g.Transparent++;
                             else union = union.IsEmpty ? r : Rectangle.Union(union, r);
                         }
@@ -534,7 +552,7 @@ namespace CropTool
                     Rectangle box = auto ? g.Fit : manual;
                     if (box.Width <= 0 || box.Height <= 0)
                     {
-                        report.AppendFormat("{0}: skipped, every PNG is fully transparent\r\n", name);
+                        report.AppendFormat("{0}: skipped, no pixel reaches the minimum opacity\r\n", name);
                         skippedFolders++;
                         step += g.Files.Count;
                         continue;
