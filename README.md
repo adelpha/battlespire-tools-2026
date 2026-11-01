@@ -1,6 +1,8 @@
 # battlespire-tools
 Tools for decoding battlespire files (and possibly other xl engine games)
 
+The `winforms` folder has a Windows GUI port of these tools (.NET Framework 4, no dependencies). See [winforms/README.md](winforms/README.md).
+
 bsatool will read anything pre-morrowind, but cant decompressed files from arena
 
 bsitool mostly works but is missing some detail about colour
